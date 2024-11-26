@@ -10,6 +10,8 @@ const xlsx = require('xlsx');
 const path = require('path');
 const fs = require('fs');
 
+const { utils, writeFile } = xlsx;
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -436,6 +438,112 @@ app.post('/api/pqrs/alertas', (req, res) => {
       });
 
       res.status(200).send('Alertas enviadas con éxito.');
+    }
+  );
+});
+
+// Ruta para exportar PQRS a Excel
+app.get('/api/export-pqrs', (req, res) => {
+  // Consultar las PQRS desde la base de datos
+  db.query('SELECT * FROM pqrs', (err, results) => {
+    if (err) {
+      console.error('Error al obtener las PQRS:', err);
+      return res.status(500).send('Error al obtener las PQRS.');
+    }
+
+    try {
+      // Convertir los resultados a un formato adecuado para Excel
+      const ws = utils.json_to_sheet(results);
+      const wb = utils.book_new();
+      utils.book_append_sheet(wb, ws, 'PQRS');
+
+      // Nombre del archivo
+      const filePath = path.join(__dirname, 'exports', 'pqrs.xlsx');
+
+      // Crear directorio si no existe
+      if (!fs.existsSync(path.dirname(filePath))) {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      }
+
+      // Guardar el archivo en el servidor
+      writeFile(wb, filePath);
+
+      // Enviar el archivo como respuesta
+      res.download(filePath, 'pqrs.xlsx', (err) => {
+        if (err) {
+          console.error('Error al enviar el archivo:', err);
+          res.status(500).send('Error al descargar el archivo.');
+        }
+
+        // Eliminar el archivo después de la descarga
+        fs.unlinkSync(filePath);
+      });
+    } catch (error) {
+      console.error('Error al generar el archivo Excel:', error);
+      res.status(500).send('Error al generar el archivo Excel.');
+    }
+  });
+});
+
+app.get('/api/pqrs/stats', (req, res) => {
+  const stats = { pqrsPorTipo: [], pqrsPorEstado: [], promedioRespuesta: 0 };
+
+  db.query(
+    'SELECT tipo_requerimiento, COUNT(*) AS total FROM pqrs GROUP BY tipo_requerimiento',
+    (err, tipoResults) => {
+      if (err) {
+        console.error('Error al obtener estadísticas por tipo:', err);
+        return res.status(500).send('Error al obtener estadísticas.');
+      }
+
+      stats.pqrsPorTipo = tipoResults;
+
+      db.query(
+        'SELECT estado, COUNT(*) AS total FROM pqrs GROUP BY estado',
+        (err, estadoResults) => {
+          if (err) {
+            console.error('Error al obtener estadísticas por estado:', err);
+            return res.status(500).send('Error al obtener estadísticas.');
+          }
+
+          stats.pqrsPorEstado = estadoResults;
+
+          db.query(
+            'SELECT AVG(DATEDIFF(fecha_respuesta, fecha_radicacion)) AS promedio_respuesta FROM pqrs WHERE fecha_respuesta IS NOT NULL',
+            (err, promedioResults) => {
+              if (err) {
+                console.error('Error al calcular el promedio de respuesta:', err);
+                return res.status(500).send('Error al obtener estadísticas.');
+              }
+
+              stats.promedioRespuesta = promedioResults[0]?.promedio_respuesta || 0;
+              res.status(200).json(stats);
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+app.get('/api/pqrs/trend', (req, res) => {
+  db.query(
+    `SELECT DATE(fecha_radicacion) AS fecha, COUNT(*) AS total 
+     FROM pqrs 
+     WHERE fecha_radicacion >= DATE(NOW()) - INTERVAL 7 DAY 
+     GROUP BY DATE(fecha_radicacion) 
+     ORDER BY fecha ASC`,
+    (err, results) => {
+      if (err) {
+        console.error('Error al obtener la tendencia de PQRS:', err);
+        return res.status(500).send('Error al obtener la tendencia.');
+      }
+
+      if (!results.length) {
+        return res.status(404).send('No hay datos disponibles para la tendencia.');
+      }
+
+      res.status(200).json(results);
     }
   );
 });
